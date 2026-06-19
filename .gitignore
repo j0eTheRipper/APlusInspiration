@@ -1,0 +1,51 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.sln.docstates
+*.userprefs
+.vs/
+*.csproj.user
+**/Debug/
+**/Release/
+*.DotSettings.user
+
+# NuGet
+packages/
+*.nupkg
+**/[Pp]ackages/*
+
+# JetBrains Rider
+.idea/
+*.sln.iml
+*.iml
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.dockerignore
+
+# SQLite
+*.sqlite
+*.db
+
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
