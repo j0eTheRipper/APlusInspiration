@@ -5,6 +5,7 @@
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
         <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+        <InternalsVisibleTo>WebApplication1.Tests</InternalsVisibleTo>
     </PropertyGroup>
 
     <ItemGroup>

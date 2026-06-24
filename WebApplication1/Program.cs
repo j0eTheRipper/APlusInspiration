@@ -23,7 +23,6 @@ app.MapPost("/signup", async (User user, UserDB db) =>
 {
     db.User.Add(user);
     await db.SaveChangesAsync();
-
     return Results.Created();
 });
 
