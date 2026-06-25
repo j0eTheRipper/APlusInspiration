@@ -11,8 +11,16 @@ using WebApplication1.Services;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOpenApi();
-builder.Services.AddDbContext<UserDB>(opt =>
-    opt.UseSqlServer(builder.Configuration.GetConnectionString("PhotoAppDb")));
+if (builder.Environment.IsEnvironment("Testing"))
+{
+    builder.Services.AddDbContext<UserDB>(opt =>
+        opt.UseInMemoryDatabase("TestDb"));
+}
+else
+{
+    builder.Services.AddDbContext<UserDB>(opt =>
+        opt.UseSqlServer(builder.Configuration.GetConnectionString("PhotoAppDb")));
+}
 builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<PhotoService>();
@@ -47,7 +55,10 @@ try
     using (var scope = app.Services.CreateScope())
     {
         var db = scope.ServiceProvider.GetRequiredService<UserDB>();
-        db.Database.Migrate();
+        if (db.Database.IsInMemory())
+            db.Database.EnsureCreated();
+        else
+            db.Database.Migrate();
     }
 }
 catch (Exception ex)
@@ -207,6 +218,69 @@ app.MapGet("/photos/{id:int}/file", async (int id, UserDB db, PhotoService photo
         File.OpenRead(photo.StoredPath),
         photo.ContentType,
         photo.FileName);
+});
+
+// ─── Save Photo ─────────────────────────────────────────────────────────────
+
+app.MapPut("/photo/{id:int}", async (int id, HttpRequest request, UserDB db) =>
+{
+    var userIdClaim = request.HttpContext.User.FindFirst(
+        System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+    if (userIdClaim == null)
+        return Results.Unauthorized();
+
+    var photo = await db.Photo.FindAsync(id);
+    if (photo == null)
+        return Results.NotFound("Photo not found.");
+
+    var userId = int.Parse(userIdClaim);
+
+    var existing = await db.SavedPhoto.FindAsync(userId, id);
+    if (existing != null)
+        return Results.Ok(new SavedPhotoResponse
+        {
+            UserId = existing.UserId,
+            PhotoId = existing.PhotoId,
+            SavedAt = existing.SavedAt
+        });
+
+    var saved = new SavedPhoto
+    {
+        UserId = userId,
+        PhotoId = id,
+        SavedAt = DateTime.UtcNow
+    };
+
+    db.SavedPhoto.Add(saved);
+    await db.SaveChangesAsync();
+
+    return Results.Created($"/saved/{saved.UserId}/{saved.PhotoId}", new SavedPhotoResponse
+    {
+        UserId = saved.UserId,
+        PhotoId = saved.PhotoId,
+        SavedAt = saved.SavedAt
+    });
+});
+
+// ─── Unsave Photo ───────────────────────────────────────────────────────────
+
+app.MapDelete("/saved/{id:int}", async (int id, HttpRequest request, UserDB db) =>
+{
+    var userIdClaim = request.HttpContext.User.FindFirst(
+        System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+    if (userIdClaim == null)
+        return Results.Unauthorized();
+
+    var userId = int.Parse(userIdClaim);
+
+    var saved = await db.SavedPhoto.FindAsync(userId, id);
+    if (saved == null)
+        return Results.NotFound("Save record not found.");
+
+    db.SavedPhoto.Remove(saved);
+    await db.SaveChangesAsync();
+
+    return Results.NoContent();
 });
 
 // ─── Set User Role (Admin only) ─────────────────────────────────────────────

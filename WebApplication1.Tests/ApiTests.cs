@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using Xunit;
 using WebApplication1.Data;
 using WebApplication1.DTOs;
 
@@ -23,16 +24,7 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
     {
         _factory = factory.WithWebHostBuilder(builder =>
         {
-            builder.ConfigureTestServices(services =>
-            {
-                var descriptor = services.SingleOrDefault(
-                    d => d.ServiceType == typeof(DbContextOptions<UserDB>));
-                if (descriptor != null)
-                    services.Remove(descriptor);
-
-                services.AddDbContext<UserDB>(opt =>
-                    opt.UseInMemoryDatabase("TestDb"));
-            });
+            builder.UseSetting("Environment", "Testing");
         });
     }
 
@@ -296,5 +288,165 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
         var client = CreateClient();
         var response = await client.GetAsync("/photos/999");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SavePhoto_WithoutAuth_ReturnsUnauthorized()
+    {
+        var client = CreateClient();
+        var response = await client.PutAsync("/photo/1", null);
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SavePhoto_NonExistentPhoto_ReturnsNotFound()
+    {
+        var client = CreateClient();
+        var token = GenerateTestToken("user");
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await client.PutAsync("/photo/999", null);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SavePhoto_AsUser_ReturnsCreated()
+    {
+        var client = CreateClient();
+        var photoId = await CreateTestPhoto();
+
+        var token = GenerateTestToken("user");
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await client.PutAsync($"/photo/{photoId}", null);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<SavedPhotoResponse>();
+        Assert.NotNull(body);
+        Assert.Equal(photoId, body.PhotoId);
+        Assert.Equal(1, body.UserId);
+    }
+
+    [Fact]
+    public async Task SavePhoto_AsCurator_ReturnsCreated()
+    {
+        var client = CreateClient();
+        var photoId = await CreateTestPhoto();
+
+        var token = GenerateTestToken("curator");
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await client.PutAsync($"/photo/{photoId}", null);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SavePhoto_AsAdmin_ReturnsCreated()
+    {
+        var client = CreateClient();
+        var photoId = await CreateTestPhoto();
+
+        var token = GenerateTestToken("admin");
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await client.PutAsync($"/photo/{photoId}", null);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SavePhoto_DuplicateSave_ReturnsOk()
+    {
+        var client = CreateClient();
+        var photoId = await CreateTestPhoto();
+
+        var token = GenerateTestToken("user");
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        var first = await client.PutAsync($"/photo/{photoId}", null);
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+
+        var second = await client.PutAsync($"/photo/{photoId}", null);
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+
+        var body = await second.Content.ReadFromJsonAsync<SavedPhotoResponse>();
+        Assert.NotNull(body);
+        Assert.Equal(photoId, body.PhotoId);
+        Assert.Equal(1, body.UserId);
+    }
+
+    [Fact]
+    public async Task UnsavePhoto_WithoutAuth_ReturnsUnauthorized()
+    {
+        var client = CreateClient();
+        var response = await client.DeleteAsync("/saved/1");
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task UnsavePhoto_NotSaved_ReturnsNotFound()
+    {
+        var client = CreateClient();
+        var token = GenerateTestToken("user");
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await client.DeleteAsync("/saved/999");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task UnsavePhoto_AsUser_ReturnsNoContent()
+    {
+        var client = CreateClient();
+        var photoId = await CreateTestPhoto();
+
+        var token = GenerateTestToken("user");
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        var saveResponse = await client.PutAsync($"/photo/{photoId}", null);
+        Assert.Equal(HttpStatusCode.Created, saveResponse.StatusCode);
+
+        var response = await client.DeleteAsync($"/saved/{photoId}");
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task UnsavePhoto_AlreadyUnsaved_ReturnsNotFound()
+    {
+        var client = CreateClient();
+        var photoId = await CreateTestPhoto();
+
+        var token = GenerateTestToken("user");
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        var saveResponse = await client.PutAsync($"/photo/{photoId}", null);
+        Assert.Equal(HttpStatusCode.Created, saveResponse.StatusCode);
+
+        await client.DeleteAsync($"/saved/{photoId}");
+
+        var secondDelete = await client.DeleteAsync($"/saved/{photoId}");
+        Assert.Equal(HttpStatusCode.NotFound, secondDelete.StatusCode);
+    }
+
+    private async Task<int> CreateTestPhoto()
+    {
+        var adminClient = CreateClient();
+        var adminToken = GenerateTestToken("admin");
+        adminClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", adminToken);
+
+        using var content = new MultipartFormDataContent();
+        content.Add(new ByteArrayContent(new byte[] { 1, 2, 3 }), "file", "test.jpg");
+
+        var response = await adminClient.PostAsync("/photos/upload", content);
+        var body = await response.Content.ReadFromJsonAsync<PhotoResponse>();
+        return body!.Id;
     }
 }
