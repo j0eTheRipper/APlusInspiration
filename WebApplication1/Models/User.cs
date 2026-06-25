@@ -1,6 +1,6 @@
 using System.ComponentModel.DataAnnotations.Schema;
 
-namespace WebApplication1;
+namespace WebApplication1.Models;
 
 [Table("users")]
 public class User
@@ -10,4 +10,5 @@ public class User
     public string username { get; set; }
     public string password { get; set; }
     public string email { get; set; }
+    public string role { get; set; } = "user";
 }

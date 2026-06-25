@@ -1,3 +1,5 @@
+using WebApplication1.Models;
+
 namespace WebApplication1.Tests;
 
 public class UserModelTests
@@ -11,6 +13,7 @@ public class UserModelTests
         Assert.Null(user.username);
         Assert.Null(user.password);
         Assert.Null(user.email);
+        Assert.Equal("user", user.role);
     }
 
     [Fact]
@@ -21,12 +24,14 @@ public class UserModelTests
             Id = 1,
             username = "testuser",
             password = "password123",
-            email = "test@example.com"
+            email = "test@example.com",
+            role = "curator"
         };
 
         Assert.Equal(1, user.Id);
         Assert.Equal("testuser", user.username);
         Assert.Equal("password123", user.password);
         Assert.Equal("test@example.com", user.email);
+        Assert.Equal("curator", user.role);
     }
 }
