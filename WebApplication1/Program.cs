@@ -86,8 +86,6 @@ app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 
-// ─── Signup ─────────────────────────────────────────────────────────────────
-
 app.MapPost("/signup", async (SignupRequest req, UserDB db) =>
 {
     if (string.IsNullOrWhiteSpace(req.Username) ||
@@ -115,8 +113,6 @@ app.MapPost("/signup", async (SignupRequest req, UserDB db) =>
     return Results.Created();
 });
 
-// ─── Login ──────────────────────────────────────────────────────────────────
-
 app.MapPost("/login", async (LoginRequest req, UserDB db, TokenService tokenService) =>
 {
     if (string.IsNullOrWhiteSpace(req.Username) ||
@@ -135,8 +131,6 @@ app.MapPost("/login", async (LoginRequest req, UserDB db, TokenService tokenServ
         Role = user.role
     });
 });
-
-// ─── Upload Photo ───────────────────────────────────────────────────────────
 
 app.MapPost("/photos/upload", async (HttpRequest request, UserDB db, PhotoService photoService) =>
 {
@@ -198,7 +192,23 @@ app.MapGet("/photos", async (UserDB db) =>
     return Results.Ok(photos);
 });
 
-// ─── Get Photo Metadata ─────────────────────────────────────────────────────
+app.MapGet("/photos/by/{userId:int}", async (int userId, UserDB db) =>
+{
+    var photos = await db.Photo
+        .Where(p => p.UploadedByUserId == userId)
+        .OrderByDescending(p => p.UploadedAt)
+        .Select(p => new PhotoResponse
+        {
+            Id = p.Id,
+            FileName = p.FileName,
+            ContentType = p.ContentType,
+            UploadedAt = p.UploadedAt,
+            Url = $"/photos/{p.Id}/file"
+        })
+        .ToListAsync();
+
+    return Results.Ok(photos);
+});
 
 app.MapGet("/photos/{id:int}", async (int id, UserDB db) =>
 {
@@ -292,8 +302,6 @@ app.MapDelete("/saved/{id:int}", async (int id, HttpRequest request, UserDB db) 
 
     return Results.NoContent();
 });
-
-// ─── Set User Role (Admin only) ─────────────────────────────────────────────
 
 app.MapPost("/admin/users/{id:int}/role", async (int id, SetRoleRequest req, UserDB db) =>
 {

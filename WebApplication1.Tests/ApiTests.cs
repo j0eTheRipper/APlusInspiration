@@ -291,6 +291,33 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task GetPhotosByUser_NoPhotos_ReturnsEmptyList()
+    {
+        var client = CreateClient();
+        var response = await client.GetAsync("/photos/by/999");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<List<PhotoResponse>>();
+        Assert.NotNull(body);
+        Assert.Empty(body);
+    }
+
+    [Fact]
+    public async Task GetPhotosByUser_WithPhotos_ReturnsPhotos()
+    {
+        var client = CreateClient();
+        var photoId = await CreateTestPhoto();
+
+        var response = await client.GetAsync("/photos/by/1");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<List<PhotoResponse>>();
+        Assert.NotNull(body);
+        Assert.NotEmpty(body);
+        Assert.Contains(body, p => p.Id == photoId);
+    }
+
+    [Fact]
     public async Task SavePhoto_WithoutAuth_ReturnsUnauthorized()
     {
         var client = CreateClient();
