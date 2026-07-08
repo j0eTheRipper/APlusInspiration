@@ -145,18 +145,30 @@ app.MapPost("/photos/upload", async (HttpRequest request, UserDB db, PhotoServic
     await file.CopyToAsync(ms);
     var fileData = ms.ToArray();
 
-    var (storedPath, uniqueFileName) = await photoService.SaveFileAsync(fileData, file.FileName);
+    var contentType = file.ContentType ?? "application/octet-stream";
+
+    var (storedPath, uniqueFileName, thumbPath) =
+        await photoService.SaveFileAsync(fileData, file.FileName, contentType);
 
     var userIdClaim = request.HttpContext.User.FindFirst(
         System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
 
+    string? Field(string key) =>
+        request.Form.TryGetValue(key, out var v) && !string.IsNullOrWhiteSpace(v) ? v.ToString() : null;
+
+
     var photo = new Photo
     {
         FileName = file.FileName,
-        ContentType = file.ContentType ?? "application/octet-stream",
+        ContentType = contentType,
         StoredPath = storedPath,
+        ThumbPath = thumbPath,
         UploadedAt = DateTime.UtcNow,
-        UploadedByUserId = int.Parse(userIdClaim!)
+        UploadedByUserId = int.Parse(userIdClaim!),
+        Title = Field("title"),
+        Artist = Field("artist"),
+        Year = Field("year"),
+        Description = Field("description")
     };
 
     db.Photo.Add(photo);
@@ -169,7 +181,12 @@ app.MapPost("/photos/upload", async (HttpRequest request, UserDB db, PhotoServic
         FileName = photo.FileName,
         ContentType = photo.ContentType,
         UploadedAt = photo.UploadedAt,
-        Url = $"{baseUrl}/photos/{photo.Id}/file"
+        Url = $"{baseUrl}/photos/{photo.Id}/file",
+        ThumbUrl = photo.ThumbPath != null ? $"{baseUrl}/photos/{photo.Id}/thumb" : null,
+        Title = photo.Title,
+        Artist = photo.Artist,
+        Year = photo.Year,
+        Description = photo.Description
     });
 }).RequireAuthorization("CuratorOrAdmin");
 
@@ -185,7 +202,12 @@ app.MapGet("/photos", async (UserDB db) =>
             FileName = p.FileName,
             ContentType = p.ContentType,
             UploadedAt = p.UploadedAt,
-            Url = $"/photos/{p.Id}/file"
+            Url = $"/photos/{p.Id}/file",
+            ThumbUrl = p.ThumbPath != null ? $"/photos/{p.Id}/thumb" : null,
+            Title = p.Title,
+            Artist = p.Artist,
+            Year = p.Year,
+            Description = p.Description
         })
         .ToListAsync();
 
@@ -203,7 +225,12 @@ app.MapGet("/photos/by/{userId:int}", async (int userId, UserDB db) =>
             FileName = p.FileName,
             ContentType = p.ContentType,
             UploadedAt = p.UploadedAt,
-            Url = $"/photos/{p.Id}/file"
+            Url = $"/photos/{p.Id}/file",
+            ThumbUrl = p.ThumbPath != null ? $"/photos/{p.Id}/thumb" : null,
+            Title = p.Title,
+            Artist = p.Artist,
+            Year = p.Year,
+            Description = p.Description
         })
         .ToListAsync();
 
@@ -238,6 +265,23 @@ app.MapGet("/photos/{id:int}/file", async (int id, UserDB db, PhotoService photo
         File.OpenRead(photo.StoredPath),
         photo.ContentType,
         photo.FileName);
+});
+
+// ─── Serve Photo Thumbnail ──────────────────────────────────────────────────
+
+app.MapGet("/photos/{id:int}/thumb", async (int id, UserDB db) =>
+{
+    var photo = await db.Photo.FindAsync(id);
+    if (photo == null)
+        return Results.NotFound();
+
+    // Fall back to the original image if thumbnail doesn't exist
+    var path = photo.ThumbPath ?? photo.StoredPath;
+    if (!File.Exists(path))
+        return Results.NotFound();
+
+    var contentType = photo.ThumbPath != null ? "image/jpeg" : photo.ContentType;
+    return Results.File(File.OpenRead(path), contentType);
 });
 
 // ─── Save Photo ─────────────────────────────────────────────────────────────

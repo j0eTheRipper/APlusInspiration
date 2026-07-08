@@ -7,4 +7,9 @@ public class PhotoResponse
     public string ContentType { get; set; }
     public DateTime UploadedAt { get; set; }
     public string Url { get; set; }
+    public string? Title { get; set; }
+    public string? Artist { get; set; }
+    public string? Year { get; set; }
+    public string? Description { get; set; }
+    public string? ThumbUrl { get; set; }
 }
