@@ -12,12 +12,27 @@ public class UserDB : DbContext
     public DbSet<User> User => Set<User>();
     public DbSet<Photo> Photo => Set<Photo>();
     public DbSet<SavedPhoto> SavedPhoto => Set<SavedPhoto>();
+    public DbSet<Subscription> Subscription => Set<Subscription>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<SavedPhoto>(entity =>
         {
             entity.HasKey(e => new { e.UserId, e.PhotoId });
+        });
+
+        modelBuilder.Entity<User>(entity =>
+        {
+            entity.HasIndex(e => e.StripeCustomerId);
+        });
+
+        modelBuilder.Entity<Subscription>(entity =>
+        {
+            entity.HasIndex(e => e.UserId).IsUnique();
+            entity.HasOne(e => e.User)
+                  .WithMany()
+                  .HasForeignKey(e => e.UserId)
+                  .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }
