@@ -1,6 +1,4 @@
 namespace WebApplication1.Services;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Processing;
 public class PhotoService
 {
     private readonly string _storagePath;
@@ -14,7 +12,7 @@ public class PhotoService
         Directory.CreateDirectory(_thumbPath);
     }
 
-    public async Task<(string storedPath, string uniqueFileName, string? thumbPath)> SaveFileAsync(
+    public async Task<(string storedPath, string uniqueFileName)> SaveFileAsync(
         byte[] fileData, string originalFileName, string contentType)
 
     {
@@ -24,40 +22,10 @@ public class PhotoService
 
         await File.WriteAllBytesAsync(storedPath, fileData);
 
-         var thumbPath = await TryGenerateThumbnailAsync(fileData, uniqueName, contentType);
 
-        return (storedPath, uniqueName, thumbPath);
+        return (storedPath, uniqueName);
     }
 
-    private async Task<string?> TryGenerateThumbnailAsync(byte[] fileData, string uniqueName, string contentType)
-    {
-        if (contentType != null && !contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
-            return null;
-
-        try
-        {
-            using var image = Image.Load(fileData);
-
-            // Only downscale; never upscale smaller originals.
-            if (image.Width > ThumbnailWidth)
-            {
-                image.Mutate(x => x.Resize(new ResizeOptions
-                {
-                    Mode = ResizeMode.Max,
-                    Size = new Size(ThumbnailWidth, 0)
-                }));
-            }
-
-            var thumbName = $"{Path.GetFileNameWithoutExtension(uniqueName)}.jpg";
-            var thumbFullPath = Path.Combine(_thumbPath, thumbName);
-            await image.SaveAsJpegAsync(thumbFullPath);
-            return thumbFullPath;
-        }
-        catch
-        {
-            return null;
-        }
-    }
 
     public string GetFilePath(string storedPath)
     {
