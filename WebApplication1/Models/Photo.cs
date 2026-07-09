@@ -12,4 +12,9 @@ public class Photo
     public string StoredPath { get; set; }
     public DateTime UploadedAt { get; set; }
     public int UploadedByUserId { get; set; }
+    public string? Title { get; set; }
+    public string? Artist { get; set; }
+    public string? Year { get; set; }
+    public string? Description { get; set; }
+    public string? ThumbPath { get; set; }
 }
