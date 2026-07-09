@@ -156,6 +156,11 @@ app.MapPost("/photos/upload", async (HttpRequest request, UserDB db, PhotoServic
     string? Field(string key) =>
         request.Form.TryGetValue(key, out var v) && !string.IsNullOrWhiteSpace(v) ? v.ToString() : null;
 
+    int? FieldInt(string key) =>
+        request.Form.TryGetValue(key, out var v) && int.TryParse(v.ToString(), out var n)
+            ? n
+            : null;
+
 
     var photo = new Photo
     {
@@ -166,7 +171,7 @@ app.MapPost("/photos/upload", async (HttpRequest request, UserDB db, PhotoServic
         UploadedByUserId = int.Parse(userIdClaim!),
         Title = Field("title"),
         Artist = Field("artist"),
-        Year = Field("year"),
+        Year = FieldInt("year"),
         Description = Field("description")
     };
 
