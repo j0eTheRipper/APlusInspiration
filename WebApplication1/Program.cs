@@ -147,7 +147,7 @@ app.MapPost("/photos/upload", async (HttpRequest request, UserDB db, PhotoServic
 
     var contentType = file.ContentType ?? "application/octet-stream";
 
-    var (storedPath, uniqueFileName) =
+    var (storedPath, thumbPath, uniqueFileName) =
         await photoService.SaveFileAsync(fileData, file.FileName, contentType);
 
     var userIdClaim = request.HttpContext.User.FindFirst(
@@ -167,6 +167,7 @@ app.MapPost("/photos/upload", async (HttpRequest request, UserDB db, PhotoServic
         FileName = file.FileName,
         ContentType = contentType,
         StoredPath = storedPath,
+        ThumbPath = thumbPath,
         UploadedAt = DateTime.UtcNow,
         UploadedByUserId = int.Parse(userIdClaim!),
         Title = Field("title"),
