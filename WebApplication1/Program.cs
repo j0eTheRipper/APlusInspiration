@@ -408,7 +408,7 @@ app.MapGet("/stripe/config", (IConfiguration config) =>
     });
 });
 
-app.MapPost("/subscribe", async (HttpRequest request, UserDB db, StripeService stripeService) =>
+app.MapPost("/subscribe", async (HttpRequest request, UserDB db, StripeService stripeService, IConfiguration config) =>
 {
     var userIdClaim = request.HttpContext.User.FindFirst(
         System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
@@ -420,14 +420,44 @@ app.MapPost("/subscribe", async (HttpRequest request, UserDB db, StripeService s
     if (user == null)
         return Results.NotFound("User not found.");
 
-    var body = await request.ReadFromJsonAsync<SubscriptionRequest>();
-    if (body == null || string.IsNullOrWhiteSpace(body.PaymentMethodId))
-        return Results.BadRequest("paymentMethodId is required.");
+    var frontendUrl = config["Frontend:Url"] ?? "http://localhost:5173";
+    var successUrl = $"{frontendUrl}/subscribe?session_id={{CHECKOUT_SESSION_ID}}";
+    var cancelUrl = $"{frontendUrl}/subscribe?canceled=true";
 
     try
     {
-        var subscription = await stripeService.CreateSubscriptionAsync(user, body);
-        return Results.Ok(subscription);
+        var checkoutUrl = await stripeService.CreateCheckoutSessionAsync(user, successUrl, cancelUrl);
+        return Results.Ok(new { url = checkoutUrl });
+    }
+    catch (Stripe.StripeException ex)
+    {
+        return Results.BadRequest($"Stripe error: {ex.Message}");
+    }
+}).RequireAuthorization("CuratorOrAdmin");
+
+app.MapPost("/subscribe/verify", async (HttpRequest request, UserDB db, StripeService stripeService) =>
+{
+    var userIdClaim = request.HttpContext.User.FindFirst(
+        System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+    if (userIdClaim == null)
+        return Results.Unauthorized();
+
+    var userId = int.Parse(userIdClaim);
+    var body = await request.ReadFromJsonAsync<VerifyRequest>();
+    if (body == null || string.IsNullOrWhiteSpace(body.SessionId))
+        return Results.BadRequest("sessionId is required.");
+
+    try
+    {
+        var subscription = await stripeService.VerifyCheckoutSessionAsync(userId, body.SessionId);
+        if (subscription == null)
+            return Results.BadRequest("Invalid or incomplete checkout session.");
+
+        return Results.Ok(new
+        {
+            status = subscription.Status,
+            currentPeriodEnd = subscription.CurrentPeriodEnd,
+        });
     }
     catch (Stripe.StripeException ex)
     {

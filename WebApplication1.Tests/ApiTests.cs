@@ -588,8 +588,7 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task Subscribe_WithoutAuth_ReturnsUnauthorized()
     {
         var client = CreateClient();
-        var req = new SubscriptionRequest { PaymentMethodId = "pm_test_visa" };
-        var response = await client.PostAsJsonAsync("/subscribe", req);
+        var response = await client.PostAsJsonAsync("/subscribe", new { });
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
@@ -602,13 +601,12 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
         client.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", token);
 
-        var req = new SubscriptionRequest { PaymentMethodId = "pm_test_visa" };
-        var response = await client.PostAsJsonAsync("/subscribe", req);
+        var response = await client.PostAsJsonAsync("/subscribe", new { });
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
     [Fact]
-    public async Task Subscribe_AsCurator_WithInvalidBody_ReturnsBadRequest()
+    public async Task Subscribe_AsCurator_ReturnsOkWithCheckoutUrl()
     {
         var client = CreateClient();
         await SeedUser(61, "curator_sub_user", "curator");
@@ -617,28 +615,26 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
             new AuthenticationHeaderValue("Bearer", token);
 
         var response = await client.PostAsJsonAsync("/subscribe", new { });
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.TryGetProperty("url", out var urlProp));
+        Assert.Contains("checkout.stripe.com", urlProp.GetString());
     }
 
     [Fact]
-    public async Task Subscribe_AsAdmin_ReturnsBadRequest_OrError()
+    public async Task Subscribe_AsAdmin_ReturnsOkWithCheckoutUrl()
     {
-        // Admin has CuratorOrAdmin policy so auth passes, but the Stripe API
-        // call will fail in test mode (no real Stripe). We verify the endpoint
-        // accepts the request structure.
         var client = CreateClient();
         await SeedUser(62, "admin_sub_user", "admin");
         var token = GenerateTestToken("admin", 62);
         client.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", token);
 
-        var req = new SubscriptionRequest { PaymentMethodId = "pm_test_visa" };
-        var response = await client.PostAsJsonAsync("/subscribe", req);
-        // Stripe will reject the fake payment method, so we expect either
-        // 400 or 500 depending on the Stripe error handling.
-        Assert.True(
-            response.StatusCode == HttpStatusCode.BadRequest ||
-            response.StatusCode == HttpStatusCode.InternalServerError);
+        var response = await client.PostAsJsonAsync("/subscribe", new { });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.TryGetProperty("url", out var urlProp));
+        Assert.Contains("checkout.stripe.com", urlProp.GetString());
     }
 
     // ─── Subscription Status Endpoint Tests ───────────────────────────────────

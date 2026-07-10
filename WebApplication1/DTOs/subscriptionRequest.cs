@@ -3,9 +3,9 @@ using System.Text.Json.Serialization;
 
 namespace WebApplication1.DTOs;
 
-public class SubscriptionRequest
+public class VerifyRequest
 {
-    [Required(ErrorMessage = "PaymentMethodId is required.")]
-    [JsonPropertyName("paymentMethodId")]
-    public string PaymentMethodId { get; set; }
+    [Required(ErrorMessage = "SessionId is required.")]
+    [JsonPropertyName("sessionId")]
+    public string SessionId { get; set; }
 }

@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Stripe;
+using Stripe.Checkout;
 using WebApplication1.Data;
 using WebApplication1.DTOs;
 using WebApplication1.Models;
@@ -63,55 +64,71 @@ public class StripeService
         return customer;
     }
 
-    public async Task<Models.Subscription> CreateSubscriptionAsync(User user, SubscriptionRequest req)
+    public async Task<string> CreateCheckoutSessionAsync(User user, string successUrl, string cancelUrl)
     {
         var customer = await GetOrCreateCustomerAsync(user);
 
-        var paymentMethodId = req.PaymentMethodId.StartsWith("pm_")
-            ? req.PaymentMethodId
-            : (await _paymentMethodService.CreateAsync(new PaymentMethodCreateOptions
-            {
-                Type = "card",
-                Card = new PaymentMethodCardOptions { Token = req.PaymentMethodId }
-            })).Id;
-
-        await _paymentMethodService.AttachAsync(paymentMethodId, new PaymentMethodAttachOptions
-        {
-            Customer = customer.Id
-        });
-
-        var stripeSub = await _subscriptionService.CreateAsync(new SubscriptionCreateOptions
+        var options = new SessionCreateOptions
         {
             Customer = customer.Id,
-            Items = new List<SubscriptionItemOptions>
+            ClientReferenceId = user.Id.ToString(),
+            Mode = "subscription",
+            LineItems = new List<SessionLineItemOptions>
             {
-                new() { Price = _priceId }
+                new() { Price = _priceId, Quantity = 1 }
             },
-            DefaultPaymentMethod = paymentMethodId
-        });
-
-        var modelsSubscription = new Models.Subscription
-        {
-            UserId = user.Id,
-            StripeSubscriptionId = stripeSub.Id,
-            StripeCustomerId = customer.Id,
-            Status = stripeSub.Status,
-            CurrentPeriodEnd = GetPeriodEnd(stripeSub),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow
+            SuccessUrl = successUrl,
+            CancelUrl = cancelUrl
         };
 
-        var existing = await _db.Subscription.FirstOrDefaultAsync(s => s.UserId == user.Id);
-        if (existing != null)
+        var sessionService = new Stripe.Checkout.SessionService();
+        var session = await sessionService.CreateAsync(options);
+
+        return session.Url!;
+    }
+
+    public async Task<Models.Subscription?> VerifyCheckoutSessionAsync(int userId, string sessionId)
+    {
+        var sessionService = new Stripe.Checkout.SessionService();
+        var session = await sessionService.GetAsync(sessionId, new SessionGetOptions
         {
-            _db.Subscription.Remove(existing);
-            await _db.SaveChangesAsync();
+            Expand = new List<string> { "subscription" }
+        });
+
+        if (session?.SubscriptionId == null)
+            return null;
+
+        var stripeSub = session.Subscription as Stripe.Subscription
+            ?? await _subscriptionService.GetAsync(session.SubscriptionId);
+
+        var local = await _db.Subscription
+            .FirstOrDefaultAsync(s => s.StripeSubscriptionId == stripeSub.Id)
+            ?? await _db.Subscription
+            .FirstOrDefaultAsync(s => s.UserId == userId);
+
+        if (local != null)
+        {
+            local.Status = stripeSub.Status;
+            local.CurrentPeriodEnd = GetPeriodEnd(stripeSub);
+            local.UpdatedAt = DateTime.UtcNow;
+        }
+        else
+        {
+            local = new Models.Subscription
+            {
+                UserId = userId,
+                StripeSubscriptionId = stripeSub.Id,
+                StripeCustomerId = stripeSub.CustomerId,
+                Status = stripeSub.Status,
+                CurrentPeriodEnd = GetPeriodEnd(stripeSub),
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+            _db.Subscription.Add(local);
         }
 
-        _db.Subscription.Add(modelsSubscription);
         await _db.SaveChangesAsync();
-
-        return modelsSubscription;
+        return local;
     }
 
     public async Task CancelSubscriptionAsync(string stripeSubscriptionId)
@@ -134,6 +151,15 @@ public class StripeService
 
         switch (stripeEvent.Type)
         {
+            case "checkout.session.completed":
+                var checkoutSession = stripeEvent.Data.Object as Session;
+                if (checkoutSession?.SubscriptionId != null)
+                {
+                    var checkoutSub = await _subscriptionService.GetAsync(checkoutSession.SubscriptionId);
+                    await SyncSubscriptionAsync(checkoutSub, checkoutSession.ClientReferenceId);
+                }
+                break;
+
             case "customer.subscription.updated":
             case "customer.subscription.deleted":
                 var sub = stripeEvent.Data.Object as Stripe.Subscription;
@@ -165,7 +191,7 @@ public class StripeService
         }
     }
 
-    private async Task SyncSubscriptionAsync(Stripe.Subscription stripeSub)
+    private async Task SyncSubscriptionAsync(Stripe.Subscription stripeSub, string? userIdFromCheckout = null)
     {
         var local = await _db.Subscription
             .FirstOrDefaultAsync(s => s.StripeSubscriptionId == stripeSub.Id);
@@ -178,8 +204,12 @@ public class StripeService
         }
         else
         {
+            var userId = userIdFromCheckout != null && int.TryParse(userIdFromCheckout, out var parsed)
+                ? parsed : 0;
+
             _db.Subscription.Add(new Models.Subscription
             {
+                UserId = userId,
                 StripeSubscriptionId = stripeSub.Id,
                 StripeCustomerId = stripeSub.CustomerId,
                 Status = stripeSub.Status,
