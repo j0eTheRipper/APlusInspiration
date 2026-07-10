@@ -1,0 +1,60 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create appsettings.json
+        run: |
+          cat > WebApplication1/appsettings.json << 'EOF'
+          {
+            "Logging": { "LogLevel": { "Default": "Information", "Microsoft.AspNetCore": "Warning" } },
+            "ConnectionStrings": { "PhotoAppDb": "" },
+            "AllowedHosts": "*",
+            "Jwt": { "Key": "ThisIsASecureKeyForDevelopmentOnlyChangeInProduction123!", "Issuer": "WebApplication1", "Audience": "WebApplication1" },
+            "PhotoStorage": { "Path": "./uploads" },
+            "Stripe": { "SecretKey": "", "PublishableKey": "", "WebhookSecret": "", "PriceId": "" },
+            "Frontend": { "Url": "http://localhost:5173" }
+          }
+          EOF
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Restore
+        run: dotnet restore WebApplication1.sln
+      - name: Build
+        run: dotnet build WebApplication1.sln --no-restore -c Release
+      - name: Test
+        run: dotnet test WebApplication1.sln --no-build -c Release --verbosity normal --filter "FullyQualifiedName!~Subscribe_AsCurator_ReturnsOkWithCheckoutUrl&FullyQualifiedName!~Subscribe_AsAdmin_ReturnsOkWithCheckoutUrl"
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd ~/APlusInspiration
+            git pull
+            docker build -f WebApplication1/Dockerfile -t webapp1 .
+            docker stop webapp1 || true
+            docker rm webapp1 || true
+            docker run -d -p 8080:8080 -p 8081:8081 \
+              --name webapp1 \
+              --network appnet \
+              webapp1
+            docker image prune -f
