@@ -66,7 +66,10 @@ try
     using (var scope = app.Services.CreateScope())
     {
         var db = scope.ServiceProvider.GetRequiredService<UserDB>();
-        db.Database.EnsureCreated();
+        if (db.Database.IsInMemory())
+            db.Database.EnsureCreated();
+        else
+            db.Database.Migrate();
     }
 }
 catch (Exception ex)
