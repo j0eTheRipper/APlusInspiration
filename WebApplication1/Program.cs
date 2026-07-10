@@ -233,6 +233,42 @@ app.MapGet("/photos", async (UserDB db) =>
     return Results.Ok(photos);
 });
 
+// ─── My Photos (for upload page) ──────────────────────────────────────────
+
+app.MapGet("/photos/mine", async (HttpRequest request, UserDB db) =>
+{
+    var userIdClaim = request.HttpContext.User.FindFirst(
+        System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+    if (userIdClaim == null)
+        return Results.Unauthorized();
+
+    var userId = int.Parse(userIdClaim);
+    var isAdmin = request.HttpContext.User.IsInRole("admin");
+
+    var query = db.Photo.AsQueryable();
+    if (!isAdmin)
+        query = query.Where(p => p.UploadedByUserId == userId);
+
+    var photos = await query
+        .OrderByDescending(p => p.UploadedAt)
+        .Select(p => new PhotoResponse
+        {
+            Id = p.Id,
+            FileName = p.FileName,
+            ContentType = p.ContentType,
+            UploadedAt = p.UploadedAt,
+            Url = $"/photos/{p.Id}/file",
+            ThumbUrl = p.ThumbPath != null ? $"/photos/{p.Id}/thumb" : null,
+            Title = p.Title,
+            Artist = p.Artist,
+            Year = p.Year,
+            Description = p.Description
+        })
+        .ToListAsync();
+
+    return Results.Ok(photos);
+}).RequireAuthorization("CuratorOrAdmin");
+
 // ─── Photos by User (subscription-gated) ────────────────────────────────────
 
 app.MapGet("/photos/by/{userId:int}", async (int userId, UserDB db) =>
