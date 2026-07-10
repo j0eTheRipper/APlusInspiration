@@ -16,14 +16,6 @@ public class UserDB : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<Photo>(entity =>
-        {
-            entity.Property(e => e.Year)
-                .HasConversion(
-                    v => v.HasValue ? v.Value.ToString() : null,
-                    v => string.IsNullOrWhiteSpace(v) ? (int?)null : int.Parse(v));
-        });
-
         modelBuilder.Entity<SavedPhoto>(entity =>
         {
             entity.HasKey(e => new { e.UserId, e.PhotoId });
