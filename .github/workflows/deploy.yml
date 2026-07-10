@@ -51,7 +51,7 @@ jobs:
             set -e
             cd ~/APlusInspiration
             git pull
-            docker build -f WebApplication1/Dockerfile -t webapp1 .
+            docker build --no-cache -f WebApplication1/Dockerfile -t webapp1 .
             docker stop webapp1 2>/dev/null || true
             docker rm webapp1 2>/dev/null || true
             docker run -d -p 8080:8080 -p 8081:8081 \
