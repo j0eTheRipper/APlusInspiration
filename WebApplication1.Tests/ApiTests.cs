@@ -770,4 +770,329 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
         var response = await client.PostAsync("/stripe/webhook", req);
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
+
+    // ─── Admin User CRUD Tests ────────────────────────────────────────────────
+
+    private HttpClient CreateAdminClient(int userId = 1)
+    {
+        var client = CreateClient();
+        var token = GenerateTestToken("admin", userId);
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+        return client;
+    }
+
+    [Fact]
+    public async Task CreateUser_AsAdmin_ReturnsCreated()
+    {
+        var client = CreateAdminClient();
+        var req = new AdminCreateUserRequest
+        {
+            Username = "crud_created",
+            Email = "crud_created@example.com",
+            Password = "pass123",
+            Role = "curator"
+        };
+
+        var response = await client.PostAsJsonAsync("/admin/users", req);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("crud_created", body.GetProperty("username").GetString());
+        Assert.Equal("curator", body.GetProperty("role").GetString());
+    }
+
+    [Fact]
+    public async Task CreateUser_WithAdminRole_ReturnsBadRequest()
+    {
+        var client = CreateAdminClient();
+        var req = new AdminCreateUserRequest
+        {
+            Username = "crud_admin_role",
+            Email = "crud_admin_role@example.com",
+            Password = "pass123",
+            Role = "admin"
+        };
+
+        var response = await client.PostAsJsonAsync("/admin/users", req);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task CreateUser_MissingFields_ReturnsBadRequest()
+    {
+        var client = CreateAdminClient();
+        var req = new AdminCreateUserRequest
+        {
+            Username = "crud_missing",
+            Email = "crud_missing@example.com",
+            Password = "",
+            Role = "user"
+        };
+
+        var response = await client.PostAsJsonAsync("/admin/users", req);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task CreateUser_DuplicateUsername_ReturnsConflict()
+    {
+        var client = CreateAdminClient();
+        var req = new AdminCreateUserRequest
+        {
+            Username = "crud_dupe",
+            Email = "crud_dupe@example.com",
+            Password = "pass123",
+            Role = "user"
+        };
+
+        var first = await client.PostAsJsonAsync("/admin/users", req);
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+
+        var dupe = new AdminCreateUserRequest
+        {
+            Username = "crud_dupe",
+            Email = "crud_dupe2@example.com",
+            Password = "pass123",
+            Role = "user"
+        };
+        var second = await client.PostAsJsonAsync("/admin/users", dupe);
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+    }
+
+    [Fact]
+    public async Task CreateUser_AsCurator_ReturnsForbidden()
+    {
+        var client = CreateClient();
+        var token = GenerateTestToken("curator");
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        var req = new AdminCreateUserRequest
+        {
+            Username = "crud_forbidden",
+            Email = "crud_forbidden@example.com",
+            Password = "pass123",
+            Role = "user"
+        };
+
+        var response = await client.PostAsJsonAsync("/admin/users", req);
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task CreateUser_WithoutAuth_ReturnsUnauthorized()
+    {
+        var client = CreateClient();
+        var req = new AdminCreateUserRequest
+        {
+            Username = "crud_noauth",
+            Email = "crud_noauth@example.com",
+            Password = "pass123",
+            Role = "user"
+        };
+
+        var response = await client.PostAsJsonAsync("/admin/users", req);
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task UpdateUser_AsAdmin_ChangesFields()
+    {
+        await SeedUser(200, "crud_upd_target", "user");
+        var client = CreateAdminClient();
+
+        var req = new AdminUpdateUserRequest
+        {
+            Username = "crud_upd_renamed",
+            Email = "crud_upd_renamed@example.com",
+            Role = "curator"
+        };
+        var response = await client.PutAsJsonAsync("/admin/users/200", req);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("crud_upd_renamed", body.GetProperty("username").GetString());
+        Assert.Equal("crud_upd_renamed@example.com", body.GetProperty("email").GetString());
+        Assert.Equal("curator", body.GetProperty("role").GetString());
+    }
+
+    [Fact]
+    public async Task UpdateUser_ToAdminRole_ReturnsBadRequest()
+    {
+        await SeedUser(202, "crud_upd_adminrole", "user");
+        var client = CreateAdminClient();
+
+        var req = new AdminUpdateUserRequest
+        {
+            Username = "crud_upd_adminrole",
+            Email = "crud_upd_adminrole@example.com",
+            Role = "admin"
+        };
+        var response = await client.PutAsJsonAsync("/admin/users/202", req);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task UpdateUser_TargetIsAdmin_ReturnsBadRequest()
+    {
+        await SeedUser(203, "crud_upd_root", "admin");
+        var client = CreateAdminClient();
+
+        var req = new AdminUpdateUserRequest
+        {
+            Username = "crud_upd_root",
+            Email = "crud_upd_root@example.com",
+            Role = "curator"
+        };
+        var response = await client.PutAsJsonAsync("/admin/users/203", req);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task UpdateUser_DuplicateEmailOfOther_ReturnsConflict()
+    {
+        await SeedUser(204, "crud_upd_a", "user");
+        await SeedUser(205, "crud_upd_b", "user");
+        var client = CreateAdminClient();
+
+        var req = new AdminUpdateUserRequest
+        {
+            Username = "crud_upd_a",
+            Email = "crud_upd_b@example.com", // belongs to user 205
+            Role = "user"
+        };
+        var response = await client.PutAsJsonAsync("/admin/users/204", req);
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task UpdateUser_NotFound_ReturnsNotFound()
+    {
+        var client = CreateAdminClient();
+        var req = new AdminUpdateUserRequest
+        {
+            Username = "crud_upd_missing",
+            Email = "crud_upd_missing@example.com",
+            Role = "user"
+        };
+        var response = await client.PutAsJsonAsync("/admin/users/99999", req);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task UpdateUser_OmittedPassword_KeepsLogin()
+    {
+        await SeedUser(206, "crud_pwd_keep", "user"); // seeded password is "pass"
+        var client = CreateAdminClient();
+
+        var req = new AdminUpdateUserRequest
+        {
+            Username = "crud_pwd_keep",
+            Email = "crud_pwd_keep@example.com",
+            Role = "curator",
+            Password = null
+        };
+        var update = await client.PutAsJsonAsync("/admin/users/206", req);
+        Assert.Equal(HttpStatusCode.OK, update.StatusCode);
+
+        var login = await CreateClient().PostAsJsonAsync("/login",
+            new LoginRequest { Username = "crud_pwd_keep", Password = "pass" });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+    }
+
+    [Fact]
+    public async Task UpdateUser_NewPassword_ChangesLogin()
+    {
+        await SeedUser(207, "crud_pwd_reset", "user");
+        var client = CreateAdminClient();
+
+        var req = new AdminUpdateUserRequest
+        {
+            Username = "crud_pwd_reset",
+            Email = "crud_pwd_reset@example.com",
+            Role = "user",
+            Password = "newpass456"
+        };
+        var update = await client.PutAsJsonAsync("/admin/users/207", req);
+        Assert.Equal(HttpStatusCode.OK, update.StatusCode);
+
+        var newLogin = await CreateClient().PostAsJsonAsync("/login",
+            new LoginRequest { Username = "crud_pwd_reset", Password = "newpass456" });
+        Assert.Equal(HttpStatusCode.OK, newLogin.StatusCode);
+
+        var oldLogin = await CreateClient().PostAsJsonAsync("/login",
+            new LoginRequest { Username = "crud_pwd_reset", Password = "pass" });
+        Assert.Equal(HttpStatusCode.Unauthorized, oldLogin.StatusCode);
+    }
+
+    [Fact]
+    public async Task DeleteUser_AsAdmin_ReturnsNoContent()
+    {
+        await SeedUser(210, "crud_del_target", "user");
+        var client = CreateAdminClient();
+
+        var response = await client.DeleteAsync("/admin/users/210");
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<UserDB>();
+        Assert.False(await db.User.AnyAsync(u => u.Id == 210));
+    }
+
+    [Fact]
+    public async Task DeleteUser_TargetIsAdmin_ReturnsBadRequest()
+    {
+        await SeedUser(212, "crud_del_admin", "admin");
+        var client = CreateAdminClient();
+
+        var response = await client.DeleteAsync("/admin/users/212");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task DeleteUser_NotFound_ReturnsNotFound()
+    {
+        var client = CreateAdminClient();
+        var response = await client.DeleteAsync("/admin/users/99998");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task DeleteUser_AsUser_ReturnsForbidden()
+    {
+        var client = CreateClient();
+        var token = GenerateTestToken("user");
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await client.DeleteAsync("/admin/users/1");
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task DeleteUser_CleansUpData()
+    {
+        await SeedUser(211, "crud_del_owner", "curator");
+        await SeedSubscription(211, "active");
+        var photoId = await CreateTestPhoto(211);
+
+        // Save the photo as user 211 so there is a SavedPhoto row to clean up.
+        var ownerClient = CreateClient();
+        ownerClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", GenerateTestToken("curator", 211));
+        var save = await ownerClient.PutAsync($"/photo/{photoId}", null);
+        Assert.Equal(HttpStatusCode.Created, save.StatusCode);
+
+        var admin = CreateAdminClient();
+        var response = await admin.DeleteAsync("/admin/users/211");
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<UserDB>();
+        Assert.False(await db.User.AnyAsync(u => u.Id == 211));
+        Assert.False(await db.Photo.AnyAsync(p => p.UploadedByUserId == 211));
+        Assert.False(await db.SavedPhoto.AnyAsync(s => s.UserId == 211 || s.PhotoId == photoId));
+        Assert.False(await db.Subscription.AnyAsync(s => s.UserId == 211));
+    }
 }

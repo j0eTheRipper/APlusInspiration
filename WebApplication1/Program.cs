@@ -434,6 +434,104 @@ app.MapPost("/admin/users/{id:int}/role", async (int id, SetRoleRequest req, Use
     return Results.Ok(new { user.Id, user.username, user.role });
 }).RequireAuthorization("AdminOnly");
 
+app.MapPost("/admin/users", async (AdminCreateUserRequest req, UserDB db) =>
+{
+    if (string.IsNullOrWhiteSpace(req.Username) ||
+        string.IsNullOrWhiteSpace(req.Password) ||
+        string.IsNullOrWhiteSpace(req.Email))
+        return Results.BadRequest("Username, password, and email are required.");
+
+    var validRoles = new[] { "user", "curator" };
+    var role = string.IsNullOrWhiteSpace(req.Role) ? "user" : req.Role;
+    if (!validRoles.Contains(role))
+        return Results.BadRequest("Role must be 'user' or 'curator'.");
+
+    if (await db.User.AnyAsync(u => u.username == req.Username))
+        return Results.Conflict("Username already exists.");
+    if (await db.User.AnyAsync(u => u.email == req.Email))
+        return Results.Conflict("Email already exists.");
+
+    var user = new User
+    {
+        username = req.Username,
+        email = req.Email,
+        password = BCrypt.Net.BCrypt.HashPassword(req.Password),
+        role = role
+    };
+
+    db.User.Add(user);
+    await db.SaveChangesAsync();
+
+    return Results.Created($"/admin/users/{user.Id}",
+        new { user.Id, user.username, user.email, user.role });
+}).RequireAuthorization("AdminOnly");
+
+app.MapPut("/admin/users/{id:int}", async (int id, AdminUpdateUserRequest req, UserDB db) =>
+{
+    if (string.IsNullOrWhiteSpace(req.Username) || string.IsNullOrWhiteSpace(req.Email))
+        return Results.BadRequest("Username and email are required.");
+
+    var validRoles = new[] { "user", "curator" };
+    if (!validRoles.Contains(req.Role))
+        return Results.BadRequest("Role must be 'user' or 'curator'.");
+
+    var user = await db.User.FindAsync(id);
+    if (user == null)
+        return Results.NotFound("User not found.");
+
+    // Admin accounts are read-only from this API.
+    if (user.role == "admin")
+        return Results.BadRequest("Admin users cannot be modified.");
+
+    // Uniqueness excluding self.
+    if (await db.User.AnyAsync(u => u.username == req.Username && u.Id != id))
+        return Results.Conflict("Username already exists.");
+    if (await db.User.AnyAsync(u => u.email == req.Email && u.Id != id))
+        return Results.Conflict("Email already exists.");
+
+    user.username = req.Username;
+    user.email = req.Email;
+    user.role = req.Role;
+    if (!string.IsNullOrWhiteSpace(req.Password))
+        user.password = BCrypt.Net.BCrypt.HashPassword(req.Password);
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { user.Id, user.username, user.email, user.role });
+}).RequireAuthorization("AdminOnly");
+
+app.MapDelete("/admin/users/{id:int}", async (int id, UserDB db) =>
+{
+    var user = await db.User.FindAsync(id);
+    if (user == null)
+        return Results.NotFound("User not found.");
+
+    // Admin accounts cannot be deleted from this API.
+    if (user.role == "admin")
+        return Results.BadRequest("Admin users cannot be deleted.");
+
+    // Photos this user uploaded (no FK -> manual cleanup).
+    var photos = await db.Photo.Where(p => p.UploadedByUserId == id).ToListAsync();
+    var photoIds = photos.Select(p => p.Id).ToList();
+
+    // SavedPhoto rows owned by this user OR pointing at this user's photos (no FK -> manual).
+    var savedRows = await db.SavedPhoto
+        .Where(s => s.UserId == id || photoIds.Contains(s.PhotoId))
+        .ToListAsync();
+
+    // Subscription has a cascade FK, but remove explicitly so this also works
+    // under the InMemory test provider (which does not enforce cascade).
+    var subs = await db.Subscription.Where(s => s.UserId == id).ToListAsync();
+
+    db.SavedPhoto.RemoveRange(savedRows);
+    db.Photo.RemoveRange(photos);
+    db.Subscription.RemoveRange(subs);
+    db.User.Remove(user);
+    await db.SaveChangesAsync();
+
+    return Results.NoContent();
+}).RequireAuthorization("AdminOnly");
+
 // ─── Stripe Endpoints ───────────────────────────────────────────────────────
 
 app.MapGet("/stripe/config", (IConfiguration config) =>
