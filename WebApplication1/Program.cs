@@ -694,4 +694,5 @@ app.MapGet("/embed/{userId:int}", async (int userId, UserDB db, IWebHostEnvironm
     return Results.Content(injected, "text/html");
 });
 
+app.MapFallbackToFile("index.html");
 app.Run();

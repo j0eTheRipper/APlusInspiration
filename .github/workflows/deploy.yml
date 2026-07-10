@@ -49,6 +49,22 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             set -e
+
+            # Build frontend
+            cd ~/artgallery
+            git pull
+            cd frontend
+            npm ci
+            npm run build
+
+            # Copy frontend dist into backend wwwroot
+            mkdir -p ~/APlusInspiration/WebApplication1/WebApplication1/wwwroot
+            cp -r ~/artgallery/frontend/dist/* ~/APlusInspiration/WebApplication1/WebApplication1/wwwroot/
+            mkdir -p ~/APlusInspiration/WebApplication1/WebApplication1/wwwroot/embed
+            cp ~/artgallery/frontend/dist/embed.html ~/APlusInspiration/WebApplication1/WebApplication1/wwwroot/embed/
+            cp -r ~/artgallery/frontend/dist/assets ~/APlusInspiration/WebApplication1/WebApplication1/wwwroot/embed/assets
+
+            # Build backend
             cd ~/APlusInspiration
             git pull
             docker build --no-cache -f WebApplication1/Dockerfile -t webapp1 .
@@ -57,5 +73,15 @@ jobs:
             docker run -d -p 8080:8080 -p 8081:8081 \
               --name webapp1 \
               --network appnet \
+              -v /data/uploads:/app/uploads \
               webapp1
             docker image prune -f
+
+            # Remove Nginx
+            sudo systemctl stop nginx 2>/dev/null || true
+            sudo systemctl disable nginx 2>/dev/null || true
+
+            # Point Cloudflare Tunnel at backend
+            sudo sed -i 's|--url http://localhost:80|--url http://localhost:8080|' /etc/systemd/system/cloudflared.service
+            sudo systemctl daemon-reload
+            sudo systemctl restart cloudflared
