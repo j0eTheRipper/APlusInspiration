@@ -33,6 +33,7 @@ else
 builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<PhotoService>();
+builder.Services.AddScoped<StripeService>();
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(opt =>
@@ -79,9 +80,23 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors();
+app.UseStaticFiles();
 app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+static async Task<bool> HasActiveSubscription(UserDB db, int userId)
+{
+    var activeStatuses = new[] { "active", "trialing", "past_due" };
+    return await db.Subscription.AnyAsync(s =>
+        s.UserId == userId &&
+        activeStatuses.Contains(s.Status) &&
+        s.CurrentPeriodEnd > DateTime.UtcNow);
+}
+
+// ─── Auth Endpoints ──────────────────────────────────────────────────────────
 
 app.MapPost("/signup", async (SignupRequest req, UserDB db) =>
 {
@@ -128,6 +143,8 @@ app.MapPost("/login", async (LoginRequest req, UserDB db, TokenService tokenServ
         Role = user.role
     });
 });
+
+// ─── Photo Endpoints ─────────────────────────────────────────────────────────
 
 app.MapPost("/photos/upload", async (HttpRequest request, UserDB db, PhotoService photoService) =>
 {
@@ -216,8 +233,13 @@ app.MapGet("/photos", async (UserDB db) =>
     return Results.Ok(photos);
 });
 
+// ─── Photos by User (subscription-gated) ────────────────────────────────────
+
 app.MapGet("/photos/by/{userId:int}", async (int userId, UserDB db) =>
 {
+    if (!await HasActiveSubscription(db, userId))
+        return Results.Forbid();
+
     var photos = await db.Photo
         .Where(p => p.UploadedByUserId == userId)
         .OrderByDescending(p => p.UploadedAt)
@@ -349,6 +371,16 @@ app.MapDelete("/saved/{id:int}", async (int id, HttpRequest request, UserDB db) 
     return Results.NoContent();
 });
 
+// ─── Admin Endpoints ────────────────────────────────────────────────────────
+
+app.MapGet("/admin/users", async (UserDB db) =>
+{
+    var users = await db.User
+        .Select(u => new { u.Id, u.username, u.email, u.role })
+        .ToListAsync();
+    return Results.Ok(users);
+}).RequireAuthorization("AdminOnly");
+
 app.MapPost("/admin/users/{id:int}/role", async (int id, SetRoleRequest req, UserDB db) =>
 {
     var validRoles = new[] { "user", "curator" };
@@ -364,5 +396,134 @@ app.MapPost("/admin/users/{id:int}/role", async (int id, SetRoleRequest req, Use
 
     return Results.Ok(new { user.Id, user.username, user.role });
 }).RequireAuthorization("AdminOnly");
+
+// ─── Stripe Endpoints ───────────────────────────────────────────────────────
+
+app.MapGet("/stripe/config", (IConfiguration config) =>
+{
+    return Results.Ok(new
+    {
+        publishableKey = config["Stripe:PublishableKey"],
+        priceId = config["Stripe:PriceId"]
+    });
+});
+
+app.MapPost("/subscribe", async (HttpRequest request, UserDB db, StripeService stripeService) =>
+{
+    var userIdClaim = request.HttpContext.User.FindFirst(
+        System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+    if (userIdClaim == null)
+        return Results.Unauthorized();
+
+    var userId = int.Parse(userIdClaim);
+    var user = await db.User.FindAsync(userId);
+    if (user == null)
+        return Results.NotFound("User not found.");
+
+    var body = await request.ReadFromJsonAsync<SubscriptionRequest>();
+    if (body == null || string.IsNullOrWhiteSpace(body.PaymentMethodId))
+        return Results.BadRequest("paymentMethodId is required.");
+
+    try
+    {
+        var subscription = await stripeService.CreateSubscriptionAsync(user, body);
+        return Results.Ok(subscription);
+    }
+    catch (Stripe.StripeException ex)
+    {
+        return Results.BadRequest($"Stripe error: {ex.Message}");
+    }
+}).RequireAuthorization("CuratorOrAdmin");
+
+app.MapGet("/subscription", async (HttpRequest request, UserDB db) =>
+{
+    var userIdClaim = request.HttpContext.User.FindFirst(
+        System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+    if (userIdClaim == null)
+        return Results.Unauthorized();
+
+    var userId = int.Parse(userIdClaim);
+    var subscription = await db.Subscription
+        .Where(s => s.UserId == userId)
+        .OrderByDescending(s => s.CreatedAt)
+        .Select(s => new
+        {
+            s.Id,
+            s.Status,
+            s.CurrentPeriodEnd,
+            s.CreatedAt,
+            s.StripeSubscriptionId
+        })
+        .FirstOrDefaultAsync();
+
+    if (subscription == null)
+        return Results.Ok(new { status = "none" });
+
+    return Results.Ok(subscription);
+}).RequireAuthorization("CuratorOrAdmin");
+
+app.MapPost("/subscribe/cancel", async (HttpRequest request, UserDB db, StripeService stripeService) =>
+{
+    var userIdClaim = request.HttpContext.User.FindFirst(
+        System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+    if (userIdClaim == null)
+        return Results.Unauthorized();
+
+    var userId = int.Parse(userIdClaim);
+    var subscription = await db.Subscription
+        .FirstOrDefaultAsync(s => s.UserId == userId && s.Status == "active");
+
+    if (subscription == null)
+        return Results.NotFound("No active subscription found.");
+
+    await stripeService.CancelSubscriptionAsync(subscription.StripeSubscriptionId);
+    return Results.Ok(new { message = "Subscription canceled." });
+}).RequireAuthorization("CuratorOrAdmin");
+
+app.MapPost("/stripe/webhook", async (HttpRequest request, IConfiguration config, StripeService stripeService) =>
+{
+    var json = await new StreamReader(request.Body).ReadToEndAsync();
+    var signatureHeader = request.Headers["Stripe-Signature"].FirstOrDefault() ?? "";
+    var webhookSecret = config["Stripe:WebhookSecret"]!;
+
+    try
+    {
+        await stripeService.HandleWebhookAsync(json, signatureHeader, webhookSecret);
+        return Results.Ok();
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest($"Webhook error: {ex.Message}");
+    }
+});
+
+// ─── Embed Page ─────────────────────────────────────────────────────────────
+
+app.MapGet("/embed/{userId:int}", async (int userId, UserDB db, IWebHostEnvironment env) =>
+{
+    if (!await HasActiveSubscription(db, userId))
+    {
+        var unavailableHtml = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>Gallery</title></head><body>" +
+            "<div style=\"display:flex;align-items:center;justify-content:center;height:100vh;background:#060608;color:#fff;font-family:system-ui,sans-serif;text-align:center;padding:20px;\">" +
+            "<div><h1 style=\"font-size:24px;font-weight:300;margin:0 0 12px;\">Unavailable</h1>" +
+            "<p style=\"color:#8a8a93;font-size:14px;\">This curator does not have an active subscription.</p></div></div></body></html>";
+        return Results.Content(unavailableHtml, "text/html");
+    }
+
+    var embedPath = Path.Combine(env.WebRootPath, "embed", "embed.html");
+    if (!System.IO.File.Exists(embedPath))
+        return Results.NotFound("Embed not available.");
+
+    var html = await System.IO.File.ReadAllTextAsync(embedPath);
+    // Rewrite absolute asset paths to include the /embed prefix so they resolve
+    // correctly when the HTML is served under /embed/{userId}.
+    html = html.Replace("src=\"/assets/", "src=\"/embed/assets/");
+    html = html.Replace("href=\"/assets/", "href=\"/embed/assets/");
+    var injected = html.Replace(
+        "</head>",
+        $"<script>window.__EMBED_USER_ID__ = {userId};</script></head>");
+
+    return Results.Content(injected, "text/html");
+});
 
 app.Run();

@@ -13,6 +13,7 @@ using System.Security.Claims;
 using Xunit;
 using WebApplication1.Data;
 using WebApplication1.DTOs;
+using WebApplication1.Models;
 
 namespace WebApplication1.Tests;
 
@@ -30,11 +31,11 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
 
     private HttpClient CreateClient() => _factory.CreateClient();
 
-    private string GenerateTestToken(string role)
+    private string GenerateTestToken(string role, int userId = 1)
     {
         var claims = new[]
         {
-            new Claim(ClaimTypes.NameIdentifier, "1"),
+            new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
             new Claim(ClaimTypes.Name, "testuser"),
             new Claim(ClaimTypes.Role, role)
         };
@@ -53,6 +54,64 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
 
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
+
+    private async Task SeedUser(int id, string username = "testuser", string role = "user")
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<UserDB>();
+        if (!await db.User.AnyAsync(u => u.Id == id))
+        {
+            db.User.Add(new User
+            {
+                Id = id,
+                username = username,
+                password = BCrypt.Net.BCrypt.HashPassword("pass"),
+                email = $"{username}@example.com",
+                role = role
+            });
+            await db.SaveChangesAsync();
+        }
+    }
+
+    private async Task SeedSubscription(int userId, string status = "active")
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<UserDB>();
+        var existing = await db.Subscription.FirstOrDefaultAsync(s => s.UserId == userId);
+        if (existing != null)
+        {
+            db.Subscription.Remove(existing);
+            await db.SaveChangesAsync();
+        }
+        db.Subscription.Add(new Subscription
+        {
+            UserId = userId,
+            StripeSubscriptionId = $"sub_test_{userId}",
+            StripeCustomerId = $"cus_test_{userId}",
+            Status = status,
+            CurrentPeriodEnd = DateTime.UtcNow.AddDays(30),
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        });
+        await db.SaveChangesAsync();
+    }
+
+    private async Task<int> CreateTestPhoto(int userId = 1)
+    {
+        var adminClient = CreateClient();
+        var adminToken = GenerateTestToken("admin", userId);
+        adminClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", adminToken);
+
+        using var content = new MultipartFormDataContent();
+        content.Add(new ByteArrayContent(new byte[] { 1, 2, 3 }), "file", "test.jpg");
+
+        var response = await adminClient.PostAsync("/photos/upload", content);
+        var body = await response.Content.ReadFromJsonAsync<PhotoResponse>();
+        return body!.Id;
+    }
+
+    // ─── Original Auth Tests ──────────────────────────────────────────────────
 
     [Fact]
     public async Task Signup_ShouldReturnCreated()
@@ -226,16 +285,9 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task SetRole_AsAdmin_WithValidUser_ReturnsOk()
     {
+        await SeedUser(1, "targetuser", "user");
+
         var client = CreateClient();
-
-        var signupReq = new SignupRequest
-        {
-            Username = "targetuser",
-            Password = "pass",
-            Email = "target@example.com"
-        };
-        await client.PostAsJsonAsync("/signup", signupReq);
-
         var token = GenerateTestToken("admin");
         client.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", token);
@@ -288,33 +340,6 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
         var client = CreateClient();
         var response = await client.GetAsync("/photos/999");
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-    }
-
-    [Fact]
-    public async Task GetPhotosByUser_NoPhotos_ReturnsEmptyList()
-    {
-        var client = CreateClient();
-        var response = await client.GetAsync("/photos/by/999");
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
-        var body = await response.Content.ReadFromJsonAsync<List<PhotoResponse>>();
-        Assert.NotNull(body);
-        Assert.Empty(body);
-    }
-
-    [Fact]
-    public async Task GetPhotosByUser_WithPhotos_ReturnsPhotos()
-    {
-        var client = CreateClient();
-        var photoId = await CreateTestPhoto();
-
-        var response = await client.GetAsync("/photos/by/1");
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
-        var body = await response.Content.ReadFromJsonAsync<List<PhotoResponse>>();
-        Assert.NotNull(body);
-        Assert.NotEmpty(body);
-        Assert.Contains(body, p => p.Id == photoId);
     }
 
     [Fact]
@@ -462,18 +487,291 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Equal(HttpStatusCode.NotFound, secondDelete.StatusCode);
     }
 
-    private async Task<int> CreateTestPhoto()
+    // ─── Subscription-Gated Photos Tests ──────────────────────────────────────
+
+    [Fact]
+    public async Task GetPhotosByUser_NoSubscription_ReturnsForbidden()
     {
-        var adminClient = CreateClient();
-        var adminToken = GenerateTestToken("admin");
-        adminClient.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", adminToken);
+        var client = CreateClient();
+        await SeedUser(50, "nosub_user");
 
-        using var content = new MultipartFormDataContent();
-        content.Add(new ByteArrayContent(new byte[] { 1, 2, 3 }), "file", "test.jpg");
+        var response = await client.GetAsync("/photos/by/50");
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
 
-        var response = await adminClient.PostAsync("/photos/upload", content);
-        var body = await response.Content.ReadFromJsonAsync<PhotoResponse>();
-        return body!.Id;
+    [Fact]
+    public async Task GetPhotosByUser_WithActiveSubscription_ReturnsOk()
+    {
+        var client = CreateClient();
+        await SeedUser(51, "sub_user", "curator");
+        await SeedSubscription(51, "active");
+        var photoId = await CreateTestPhoto(51);
+
+        var response = await client.GetAsync("/photos/by/51");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<List<PhotoResponse>>();
+        Assert.NotNull(body);
+        Assert.NotEmpty(body);
+        Assert.Contains(body, p => p.Id == photoId);
+    }
+
+    [Fact]
+    public async Task GetPhotosByUser_WithCanceledSubscription_ReturnsForbidden()
+    {
+        var client = CreateClient();
+        await SeedUser(52, "canceled_user", "curator");
+        await SeedSubscription(52, "canceled");
+
+        var response = await client.GetAsync("/photos/by/52");
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetPhotosByUser_WithExpiredSubscription_ReturnsForbidden()
+    {
+        var client = CreateClient();
+        await SeedUser(53, "expired_user", "curator");
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<UserDB>();
+            db.Subscription.Add(new Subscription
+            {
+                UserId = 53,
+                StripeSubscriptionId = "sub_expired_53",
+                StripeCustomerId = "cus_expired_53",
+                Status = "active",
+                CurrentPeriodEnd = DateTime.UtcNow.AddDays(-1),
+                CreatedAt = DateTime.UtcNow.AddDays(-60),
+                UpdatedAt = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var response = await client.GetAsync("/photos/by/53");
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetPhotosByUser_NoPhotos_WithSubscription_ReturnsEmptyList()
+    {
+        var client = CreateClient();
+        await SeedUser(54, "empty_sub_user", "curator");
+        await SeedSubscription(54, "active");
+
+        var response = await client.GetAsync("/photos/by/54");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<List<PhotoResponse>>();
+        Assert.NotNull(body);
+        Assert.Empty(body);
+    }
+
+    // ─── Stripe Config Endpoint Tests ─────────────────────────────────────────
+
+    [Fact]
+    public async Task GetStripeConfig_ReturnsOk()
+    {
+        var client = CreateClient();
+        var response = await client.GetAsync("/stripe/config");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.TryGetProperty("publishableKey", out _));
+        Assert.True(body.TryGetProperty("priceId", out _));
+    }
+
+    // ─── Subscribe Endpoint Tests ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task Subscribe_WithoutAuth_ReturnsUnauthorized()
+    {
+        var client = CreateClient();
+        var req = new SubscriptionRequest { PaymentMethodId = "pm_test_visa" };
+        var response = await client.PostAsJsonAsync("/subscribe", req);
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Subscribe_AsUser_ReturnsForbidden()
+    {
+        var client = CreateClient();
+        await SeedUser(60, "regular_sub_user");
+        var token = GenerateTestToken("user", 60);
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        var req = new SubscriptionRequest { PaymentMethodId = "pm_test_visa" };
+        var response = await client.PostAsJsonAsync("/subscribe", req);
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Subscribe_AsCurator_WithInvalidBody_ReturnsBadRequest()
+    {
+        var client = CreateClient();
+        await SeedUser(61, "curator_sub_user", "curator");
+        var token = GenerateTestToken("curator", 61);
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await client.PostAsJsonAsync("/subscribe", new { });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Subscribe_AsAdmin_ReturnsBadRequest_OrError()
+    {
+        // Admin has CuratorOrAdmin policy so auth passes, but the Stripe API
+        // call will fail in test mode (no real Stripe). We verify the endpoint
+        // accepts the request structure.
+        var client = CreateClient();
+        await SeedUser(62, "admin_sub_user", "admin");
+        var token = GenerateTestToken("admin", 62);
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        var req = new SubscriptionRequest { PaymentMethodId = "pm_test_visa" };
+        var response = await client.PostAsJsonAsync("/subscribe", req);
+        // Stripe will reject the fake payment method, so we expect either
+        // 400 or 500 depending on the Stripe error handling.
+        Assert.True(
+            response.StatusCode == HttpStatusCode.BadRequest ||
+            response.StatusCode == HttpStatusCode.InternalServerError);
+    }
+
+    // ─── Subscription Status Endpoint Tests ───────────────────────────────────
+
+    [Fact]
+    public async Task GetSubscription_WithoutAuth_ReturnsUnauthorized()
+    {
+        var client = CreateClient();
+        var response = await client.GetAsync("/subscription");
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetSubscription_AsCurator_NoSubscription_ReturnsNone()
+    {
+        var client = CreateClient();
+        await SeedUser(70, "no_sub_curator", "curator");
+        var token = GenerateTestToken("curator", 70);
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await client.GetAsync("/subscription");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("none", body.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task GetSubscription_AsCurator_WithSubscription_ReturnsStatus()
+    {
+        var client = CreateClient();
+        await SeedUser(71, "active_curator", "curator");
+        await SeedSubscription(71, "active");
+        var token = GenerateTestToken("curator", 71);
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await client.GetAsync("/subscription");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("active", body.GetProperty("status").GetString());
+    }
+
+    // ─── Cancel Subscription Endpoint Tests ───────────────────────────────────
+
+    [Fact]
+    public async Task CancelSubscription_WithoutAuth_ReturnsUnauthorized()
+    {
+        var client = CreateClient();
+        var response = await client.PostAsJsonAsync("/subscribe/cancel", new { });
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task CancelSubscription_AsCurator_NoActive_ReturnsNotFound()
+    {
+        var client = CreateClient();
+        await SeedUser(80, "cancel_no_sub", "curator");
+        var token = GenerateTestToken("curator", 80);
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await client.PostAsJsonAsync("/subscribe/cancel", new { });
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    // ─── Embed Endpoint Tests ─────────────────────────────────────────────────
+
+    [Fact]
+    public async Task EmbedPage_NoSubscription_ReturnsUnavailableMessage()
+    {
+        var client = CreateClient();
+        await SeedUser(90, "embed_no_sub");
+
+        var response = await client.GetAsync("/embed/90");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var html = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Unavailable", html);
+        Assert.Contains("does not have an active subscription", html);
+    }
+
+    [Fact]
+    public async Task EmbedPage_WithActiveSubscription_ReturnsHtml()
+    {
+        var client = CreateClient();
+        await SeedUser(91, "embed_active_sub", "curator");
+        await SeedSubscription(91, "active");
+
+        var response = await client.GetAsync("/embed/91");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var html = await response.Content.ReadAsStringAsync();
+        Assert.Contains("__EMBED_USER_ID__", html);
+        Assert.Contains("91", html);
+    }
+
+    [Fact]
+    public async Task EmbedPage_CanceledSubscription_ReturnsUnavailable()
+    {
+        var client = CreateClient();
+        await SeedUser(92, "embed_canceled", "curator");
+        await SeedSubscription(92, "canceled");
+
+        var response = await client.GetAsync("/embed/92");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var html = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Unavailable", html);
+    }
+
+    // ─── Webhook Endpoint Tests ───────────────────────────────────────────────
+
+    [Fact]
+    public async Task WebhookEndpoint_WithInvalidSignature_ReturnsBadRequest()
+    {
+        var client = CreateClient();
+        var req = new StringContent("{}", Encoding.UTF8, "application/json");
+        req.Headers.Add("Stripe-Signature", "invalid_signature");
+
+        var response = await client.PostAsync("/stripe/webhook", req);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task WebhookEndpoint_WithoutSignature_ReturnsBadRequest()
+    {
+        var client = CreateClient();
+        var req = new StringContent("{}", Encoding.UTF8, "application/json");
+
+        var response = await client.PostAsync("/stripe/webhook", req);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 }

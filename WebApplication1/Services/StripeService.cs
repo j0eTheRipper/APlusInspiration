@@ -17,6 +17,7 @@ public class StripeService
     public StripeService(UserDB db, IConfiguration config)
     {
         _db = db;
+        StripeConfiguration.ApiKey = config["Stripe:SecretKey"];
         _customerService = new CustomerService();
         _paymentMethodService = new PaymentMethodService();
         _subscriptionService = new Stripe.SubscriptionService();
@@ -25,11 +26,17 @@ public class StripeService
 
     private static DateTime GetPeriodEnd(Stripe.Subscription sub)
     {
-        var token = sub.RawJObject?["current_period_end"];
-        var ts = token?.ToObject<long>();
+        if (sub.Items?.Data?.Count > 0)
+        {
+            var item = sub.Items.Data[0];
+            if (item.CurrentPeriodEnd != default)
+                return item.CurrentPeriodEnd;
+        }
+
+        var ts = sub.RawJObject?["current_period_end"]?.ToObject<long>();
         return ts.HasValue
             ? DateTimeOffset.FromUnixTimeSeconds(ts.Value).UtcDateTime
-            : DateTime.UtcNow;
+            : DateTime.UtcNow.AddDays(30);
     }
 
     private static string? GetInvoiceSubscriptionId(Invoice invoice)
