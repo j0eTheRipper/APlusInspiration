@@ -17,4 +17,6 @@ public class Photo
     public int? Year { get; set; }
     public string? Description { get; set; }
     public string? ThumbPath { get; set; }
+    public string? HexColor { get; set; }
+    public double? Hue { get; set; }
 }
