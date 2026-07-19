@@ -173,11 +173,9 @@ app.MapPost("/photos/upload", async (HttpRequest request, UserDB db, PhotoServic
 
     string? Field(string key) =>
         request.Form.TryGetValue(key, out var v) && !string.IsNullOrWhiteSpace(v) ? v.ToString() : null;
-
-    int? FieldInt(string key) =>
-        request.Form.TryGetValue(key, out var v) && int.TryParse(v.ToString(), out var n)
-            ? n
-            : null;
+    
+    int? FieldInt(string key) =>                                                                                                                                                                                        
+        request.Form.TryGetValue(key, out var v) && int.TryParse(v.ToString(), out var n) ? n : null;
 
 
     var photo = new Photo
@@ -692,6 +690,28 @@ app.MapGet("/embed/{userId:int}", async (int userId, UserDB db, IWebHostEnvironm
         $"<script>window.__EMBED_USER_ID__ = {userId};</script></head>");
 
     return Results.Content(injected, "text/html");
+});
+
+app.MapPost("/api/photos/updateColor", async (HttpRequest req, ColorUpdateRequest request, UserDB db) =>
+{
+    if (!req.Headers.TryGetValue("x-lambda-secret", out var providedSecret) || providedSecret != "secretkey")
+    {
+        return Results.Unauthorized();
+    }
+
+    var photo = await db.Photo.FirstOrDefaultAsync(p => p.FileName == request.S3Key);
+
+    if (photo is null)
+    {
+        return Results.NotFound(new { Message = "Photo not found in database." });
+    }
+
+    photo.HexColor = request.HexColor;
+    photo.Hue = request.Hue;
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { Message = "Color details updated successfully.", PhotoId = photo.Id });
 });
 
 app.MapFallbackToFile("index.html");
