@@ -1,4 +1,6 @@
 using System.Text;
+using Amazon;
+using Amazon.S3;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -32,8 +34,21 @@ else
 }
 builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 builder.Services.AddScoped<TokenService>();
-builder.Services.AddScoped<PhotoService>();
 builder.Services.AddScoped<StripeService>();
+
+if (builder.Environment.IsEnvironment("Testing"))
+{
+    builder.Services.AddScoped<IPhotoStorage, LocalPhotoStorage>();
+}
+else
+{
+    var s3AccessKey = builder.Configuration["PhotoStorage:S3AccessKey"]!;
+    var s3SecretKey = builder.Configuration["PhotoStorage:S3SecretKey"]!;
+    var s3Region = builder.Configuration["PhotoStorage:S3Region"] ?? "us-east-1";
+    builder.Services.AddSingleton<IAmazonS3>(_ =>
+        new AmazonS3Client(s3AccessKey, s3SecretKey, RegionEndpoint.GetBySystemName(s3Region)));
+    builder.Services.AddScoped<IPhotoStorage, PhotoService>();
+}
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(opt =>
@@ -150,7 +165,7 @@ app.MapPost("/login", async (LoginRequest req, UserDB db, TokenService tokenServ
 
 // ─── Photo Endpoints ─────────────────────────────────────────────────────────
 
-app.MapPost("/photos/upload", async (HttpRequest request, UserDB db, PhotoService photoService) =>
+app.MapPost("/photos/upload", async (HttpRequest request, UserDB db, IPhotoStorage photoStorage) =>
 {
     if (!request.HasFormContentType)
         return Results.BadRequest("Request must be multipart/form-data.");
@@ -166,7 +181,7 @@ app.MapPost("/photos/upload", async (HttpRequest request, UserDB db, PhotoServic
     var contentType = file.ContentType ?? "application/octet-stream";
 
     var (storedPath, thumbPath, uniqueFileName) =
-        await photoService.SaveFileAsync(fileData, file.FileName, contentType);
+        await photoStorage.SaveFileAsync(fileData, file.FileName, contentType);
 
     var userIdClaim = request.HttpContext.User.FindFirst(
         System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
@@ -317,16 +332,13 @@ app.MapGet("/photos/{id:int}", async (int id, UserDB db) =>
 
 // ─── Serve Photo File ───────────────────────────────────────────────────────
 
-app.MapGet("/photos/{id:int}/file", async (int id, UserDB db, PhotoService photoService) =>
+app.MapGet("/photos/{id:int}/file", async (int id, UserDB db) =>
 {
     var photo = await db.Photo.FindAsync(id);
     if (photo == null)
         return Results.NotFound();
 
-    return Results.File(
-        File.OpenRead(photo.StoredPath),
-        photo.ContentType,
-        photo.FileName);
+    return Results.Redirect(photo.StoredPath);
 });
 
 // ─── Serve Photo Thumbnail ──────────────────────────────────────────────────
@@ -337,13 +349,11 @@ app.MapGet("/photos/{id:int}/thumb", async (int id, UserDB db) =>
     if (photo == null)
         return Results.NotFound();
 
-    // Fall back to the original image if thumbnail doesn't exist
-    var path = photo.ThumbPath ?? photo.StoredPath;
-    if (!File.Exists(path))
+    var url = photo.ThumbPath ?? photo.StoredPath;
+    if (string.IsNullOrEmpty(url))
         return Results.NotFound();
 
-    var contentType = photo.ThumbPath != null ? "image/jpeg" : photo.ContentType;
-    return Results.File(File.OpenRead(path), contentType);
+    return Results.Redirect(url);
 });
 
 // ─── Save Photo ─────────────────────────────────────────────────────────────

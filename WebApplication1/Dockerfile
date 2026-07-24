@@ -21,6 +21,5 @@ FROM base AS final
 USER root
 WORKDIR /app
 COPY --from=publish /app/publish .
-RUN mkdir -p /app/uploads && chown -R $APP_UID:$APP_UID /app/uploads
 USER $APP_UID
 ENTRYPOINT ["dotnet", "WebApplication1.dll"]

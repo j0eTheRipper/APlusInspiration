@@ -28,13 +28,16 @@ echo "=== Running ==="
 docker run -d -p 8080:8080 -p 8081:8081 \
   --name webapp1 \
   --network appnet \
-  -v /data/uploads:/app/uploads \
   -e ConnectionStrings__PhotoAppDb="$DB_CONNECTION_STRING" \
   -e Jwt__Key="$JWT_KEY" \
   -e Stripe__SecretKey="$STRIPE_SECRET_KEY" \
   -e Stripe__PublishableKey="$STRIPE_PUBLISHABLE_KEY" \
   -e Stripe__WebhookSecret="$STRIPE_WEBHOOK_SECRET" \
   -e Stripe__PriceId="$STRIPE_PRICE_ID" \
+  -e PhotoStorage__S3BucketName="$S3_BUCKET_NAME" \
+  -e PhotoStorage__S3Region="$S3_REGION" \
+  -e PhotoStorage__S3AccessKey="$S3_ACCESS_KEY" \
+  -e PhotoStorage__S3SecretKey="$S3_SECRET_KEY" \
   webapp1
 
 echo "=== Removing Nginx ==="
